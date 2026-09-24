@@ -1,0 +1,29 @@
+# Render Blueprint Specification for Rescue AI Drone
+# Deploy using: Dashboard -> New -> Blueprint -> Connect Repository
+services:
+  - type: web
+    name: rescue-ai-drone-api
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard # Standard or Starter (requires disk for persistent SQLite & detections)
+    healthCheckPath: /readyz
+    disk:
+      name: rescue-data
+      mountPath: /app/backend/data
+      sizeGB: 1
+    envVars:
+      - key: MODEL_PATH
+        value: /app/backend/models/best.pt
+      - key: CAMERA_ENABLED
+        value: "false"
+      - key: DEVICE
+        value: cpu
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.50"
+      # Set CORS_ORIGINS to your Vercel URL (e.g., https://your-project.vercel.app)
+      - key: CORS_ORIGINS
+        sync: false
+      - key: SEED_DEMO_DATA
+        value: "false"
+      - key: TORCH_NUM_THREADS
+        value: "1"

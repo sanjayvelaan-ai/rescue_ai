@@ -1,0 +1,17 @@
+import {useState} from 'react';
+import type {Mission,Survivor} from '../types';
+import {SurvivorSnapshot} from '../components/SurvivorSnapshot';
+import {downloadRecords} from '../lib/record-filters';
+export function MissionsPage({missions,survivors}:{missions:Mission[];survivors:Survivor[]}){
+ const [query,setQuery]=useState(''),[status,setStatus]=useState('all'),[selected,setSelected]=useState<string>();
+ const [recordId,setRecordId]=useState<string>();
+ const records=survivors.filter(s=>s.mission_id===selected);
+ const target=records.find(s=>s.survivor_id===recordId);
+ const visible=missions.filter(m=>(status==='all'||m.status===status)&&`${m.mission_id} ${m.search_sector}`.toLowerCase().includes(query.toLowerCase()));
+ return <div className="page-shell p-4 sm:p-6 space-y-5"><h1 className="text-lg font-bold">MISSIONS & DETECTION EVIDENCE</h1><p className="text-xs text-slate-400">Counts are calculated from saved detection records. Track counts are not unique people.</p>
+ <div className="flex flex-wrap gap-3 text-xs"><input aria-label="Search missions" placeholder="Search mission or sector" value={query} onChange={e=>setQuery(e.target.value)} className="rounded border border-slate-700 bg-slate-950 p-2 min-w-0"/><select aria-label="Mission status filter" value={status} onChange={e=>setStatus(e.target.value)} className="rounded border border-slate-700 bg-slate-950 p-2"><option value="all">All statuses</option>{[...new Set(missions.map(m=>m.status))].map(s=><option key={s}>{s}</option>)}</select></div>
+ <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">{visible.map(m=>{const rows=survivors.filter(s=>s.mission_id===m.mission_id);const rescued=rows.filter(s=>s.status==='RESCUED').length;return <button key={m.mission_id} aria-pressed={selected===m.mission_id} onClick={()=>{setSelected(m.mission_id);setRecordId(undefined);}} className={`theme-card text-left rounded-xl border p-4 space-y-3 ${selected===m.mission_id?'border-cyan-500':'border-slate-800'}`}><div className="flex flex-wrap justify-between gap-2 text-sm"><strong>{m.mission_id}</strong><span>{m.status}</span></div><p className="text-xs text-slate-400 break-words">{m.search_sector} · Started {new Date(m.start_time).toLocaleString()}</p><div className="grid grid-cols-3 gap-2 text-xs"><span>{rows.length} saved tracks</span><span>{rows.filter(s=>s.status==='DETECTED').length} awaiting review</span><span>{rescued} rescued</span></div><progress aria-label={`${m.mission_id} rescued record progress`} className="w-full" max={Math.max(1,rows.length)} value={rescued}/><p className="text-xs text-slate-500">Select to inspect evidence and export records.</p></button>;})}</div>
+ {!visible.length&&<p className="text-sm text-slate-400">No missions match these filters.</p>}
+ {selected&&<section className="theme-card border border-slate-800 rounded p-4 space-y-3"><div className="flex flex-wrap gap-2 justify-between"><h2 className="text-sm font-bold">{selected} · {records.length} detection records</h2><button className="map-toolbar-button" disabled={!records.length} onClick={()=>downloadRecords(records,`${selected}-records.csv`)}>Export mission CSV</button></div><div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">{records.map(s=><button className="map-toolbar-button break-all" key={s.survivor_id} onClick={()=>setRecordId(s.survivor_id)}>{s.survivor_id} · {s.status}</button>)}</div>{target&&<SurvivorSnapshot key={target.survivor_id} survivor={target}/>}</section>}
+ </div>;
+}

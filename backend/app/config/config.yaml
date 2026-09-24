@@ -1,0 +1,90 @@
+# Thermal-Imaging Drone Survivor Detection Pipeline Configuration
+# Optimized for Edge Deployment
+
+detection:
+  yolo_confidence: 0.35
+  iou_threshold: 0.45
+  imgsz: 416
+  nms_threshold: 0.40
+
+thermal:
+  min_plausible_temp_c: 28.0
+  max_plausible_temp_c: 42.0
+  optimal_human_temp_c: 36.5
+  hot_pixel_percentile: 85.0
+  min_hot_pixel_ratio: 0.12
+  max_hot_pixel_ratio: 0.88
+  gradient_threshold: 15.0
+  bg_annulus_margin: 8
+  bg_annulus_thickness: 12
+  min_contrast_delta: 3.0
+
+shape:
+  min_aspect_ratio: 0.6
+  max_aspect_ratio: 4.8
+  typical_aspect_ratio: 2.2
+  min_solidity: 0.25
+  max_solidity: 0.92
+  min_compactness: 0.08
+  min_head_shoulder_ratio: 0.20
+  edge_canny_low: 40
+  edge_canny_high: 120
+
+tracking:
+  min_confirm_frames: 10
+  min_verifying_frames: 3
+  max_missed_frames: 12
+  min_track_age: 5
+  iou_association_threshold: 0.30
+  kalman_measurement_noise: 0.08
+  kalman_process_noise: 0.04
+  max_velocity_pixels_per_frame: 45.0
+
+motion:
+  optical_flow_enabled: false
+  min_displacement_threshold: 1.5
+  stationary_confidence_bonus: 0.0
+  movement_confidence_bonus: 0.08
+
+context:
+  rock_max_variance: 18.0
+  vehicle_engine_min_temp_c: 65.0
+  small_fire_min_variance: 45.0
+  reflective_surface_penalty: 0.25
+
+secondary_classifier:
+  enabled: true
+  model_type: "edge_fallback"  # Options: edge_fallback, mobilenet_v3, efficientnet_lite
+  weights_path: "backend/models/secondary_thermal_crop.pt"
+  crop_size: [64, 64]
+  threshold: 0.60
+
+sensors:
+  rgb_fusion_enabled: true
+  depth_fusion_enabled: false
+  acoustic_fusion_enabled: false
+
+fusion:
+  weights:
+    yolo: 0.20
+    thermal: 0.15
+    shape: 0.20
+    secondary_cnn: 0.10
+    temporal: 0.15
+    motion: 0.05
+    context: 0.10
+    rgb: 0.05
+    depth: 0.00
+    acoustic: 0.00
+
+decision:
+  reject_threshold: 0.40
+  verifying_threshold: 0.58
+  confirm_threshold: 0.76
+  auto_rescan_for_uncertain: true
+
+logging:
+  log_detections: true
+  log_path: "data/logs/detection_events.jsonl"
+  export_uncertain_crops: true
+  crops_export_dir: "data/dataset_candidates"

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  rescue-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rescue_ai_system
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - MODEL_PATH=/app/backend/models/best.pt
+      - CAMERA_ENABLED=false
+      - CAMERA_INDEX=0
+      - CONFIDENCE_THRESHOLD=0.50
+      - IOU_THRESHOLD=0.45
+      - DEVICE=cpu
+      - GPS_MODE=SIMULATION
+      - DATABASE_URL=sqlite:///./data/rescueeye.db
+    volumes:
+      - ./backend/data:/app/backend/data
