@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useBrowserCamera } from '../lib/browser-camera-context';
 import { useDeviceLocation, freshFix } from '../lib/device-location-context';
 import { LiveCameraStreamOverlay } from './LiveCameraStreamOverlay';
-import { Camera, MapPin, Radio, ShieldAlert, Cpu, Eye, Video } from 'lucide-react';
+import { Camera, MapPin, Radio, ShieldAlert, Cpu, Eye, Video, RefreshCw } from 'lucide-react';
 
 export function CaptureStation() {
   const camera = useBrowserCamera();
@@ -20,7 +20,7 @@ export function CaptureStation() {
             LIVE MISSION CAMERA & YOLO DETECTOR
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            Native 30 FPS browser camera stream with decoupled 1.6 FPS Render Free AI inference.
+            Smooth ~30 FPS browser camera stream with asynchronous YOLO survivor detection.
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs">
@@ -81,23 +81,27 @@ export function CaptureStation() {
         </label>
       </div>
 
-      {/* GPS Location Controls Bar */}
+      {/* Non-Blocking Location Status & Manual Retry Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 text-xs text-slate-400">
         <div className="flex items-center gap-2">
           <MapPin className="w-4 h-4 text-emerald-400 shrink-0" />
           <span>
             {fix
-              ? `${fix.source === 'USER_PIN' ? 'Operator Pin' : 'GPS Location'}: ${fix.latitude.toFixed(
+              ? `${fix.source === 'USER_PIN' ? 'Operator Pin' : 'GPS Fix'}: ${fix.latitude.toFixed(
                   5
                 )}, ${fix.longitude.toFixed(5)}${
                   fix.accuracy_m != null ? ` (±${Math.round(fix.accuracy_m)}m)` : ''
                 }`
-              : 'Location: Unavailable (Captures will run without geographic coordinates)'}
+              : 'Location: Unavailable (Detection & alerts operate normally without GPS)'}
           </span>
         </div>
         <div className="flex items-center gap-2">
-          <button className="map-toolbar-button py-1 px-2.5" onClick={() => location.request(false)}>
-            Get Location
+          <button
+            className="map-toolbar-button py-1 px-2.5 flex items-center gap-1"
+            onClick={() => location.request(false)}
+          >
+            <RefreshCw className="w-3 h-3" />
+            {fix ? 'Update Location' : 'Retry Location'}
           </button>
           <button className="map-toolbar-button py-1 px-2.5" onClick={() => location.request(true)}>
             Refine GPS
@@ -110,14 +114,14 @@ export function CaptureStation() {
         </div>
       </div>
 
-      {/* Errors & Alerts */}
-      {(camera.error || location.error) && (
+      {/* Critical hardware/permission errors only */}
+      {camera.error && (
         <div
           role="alert"
           className="p-2.5 rounded-lg bg-amber-950/50 border border-amber-800/80 text-amber-300 text-xs flex items-center gap-2"
         >
           <ShieldAlert className="w-4 h-4 shrink-0 text-amber-400" />
-          <span>{camera.error || location.error}</span>
+          <span>{camera.error}</span>
         </div>
       )}
 
@@ -165,19 +169,19 @@ export function CaptureStation() {
             Inference Cycle:{' '}
             <strong className="text-slate-200">
               {camera.lastFrameAt
-                ? `${new Date(camera.lastFrameAt).toLocaleTimeString()} (${camera.processingMs} ms)`
+                ? `${new Date(camera.lastFrameAt).toLocaleTimeString()} (${(camera.latencyMs / 1000).toFixed(1)}s)`
                 : 'Waiting for first cycle'}
             </strong>
           </p>
           <p className="text-[11px] text-slate-500">
-            Browser camera stays smooth at ~30 FPS; YOLO runs asynchronously at ~1.6 FPS on Render Free.
+            Browser camera stays smooth at ~30 FPS. YOLO runs asynchronously on Render Free.
           </p>
         </div>
 
         <div className="p-3 rounded-lg bg-slate-900/50 border border-slate-800 space-y-1">
           <div className="text-slate-300 font-bold flex items-center gap-1.5">
             <ShieldAlert className="w-3.5 h-3.5 text-emerald-400" />
-            RECENT SURVIVOR ALERTS
+            MISSION SURVIVOR ALERTS
           </div>
           {camera.recentAlerts.length > 0 ? (
             <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
@@ -189,7 +193,7 @@ export function CaptureStation() {
                   <span className="text-emerald-400 font-bold">
                     {alert.trackId}: {alert.title} ({Math.round(alert.confidence * 100)}%)
                   </span>
-                  <span className="text-slate-500">{alert.timestamp}</span>
+                  <span className="text-slate-500">{alert.location} &bull; {alert.timestamp}</span>
                 </div>
               ))}
             </div>

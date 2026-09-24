@@ -1,6 +1,7 @@
 export interface DetectionConfig {
-  inferenceInterval: number; // Base polling interval in ms (500-750ms)
-  jpegQuality: number; // JPEG compression quality for offscreen capture (0.55 - 0.65)
+  inferenceInterval: number; // Starting inference interval (1000ms)
+  requestTimeoutMs: number; // Request abort timeout (9000ms)
+  jpegQuality: number; // JPEG quality for offscreen sampling (0.60)
   inferenceWidth: number; // Offscreen canvas width for inference
   inferenceHeight: number; // Offscreen canvas height for inference
   defaultConfidence: number; // Base confidence filter threshold (0.30)
@@ -12,7 +13,8 @@ export interface DetectionConfig {
 }
 
 export const DETECTION_CONFIG: DetectionConfig = {
-  inferenceInterval: 600, // ~1.6 FPS target for CPU-friendly Render Free tier
+  inferenceInterval: 1000, // Starts at ~1000ms for Render Free (0.1 CPU, 512MB RAM)
+  requestTimeoutMs: 9000, // 9-second timeout before aborting delayed inference
   jpegQuality: 0.60,
   inferenceWidth: 640,
   inferenceHeight: 360,

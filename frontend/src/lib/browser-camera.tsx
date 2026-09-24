@@ -39,8 +39,14 @@ async function cameraRequest(path: string, options: RequestInit = {}) {
   const response = await fetch(backendUrl('/api/camera/' + path), {
     ...options,
     headers: { 'Content-Type': 'application/json', ...options.headers },
-    signal: options.signal ?? AbortSignal.timeout(15000),
+    signal: options.signal ?? AbortSignal.timeout(DETECTION_CONFIG.requestTimeoutMs),
   });
+
+  // Handle HTTP 429 without throwing a fatal error
+  if (response.status === 429) {
+    return { busy: true, detections: [], tracks: [] };
+  }
+
   const result = await response.json().catch(() => ({ detail: 'Camera service did not respond.' }));
   if (!response.ok) {
     throw new CameraRequestError(
@@ -101,8 +107,8 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
   const [survivorCount, setSurvivorCount] = useState(0);
 
   const [inferenceSize, setInferenceSize] = useState<416 | 640>(416);
-  const [fps, setFps] = useState(0); // native camera stream FPS
-  const [inferenceFps, setInferenceFps] = useState(0); // YOLO inference FPS
+  const [fps, setFps] = useState(0); // native camera stream FPS (~24-30 FPS)
+  const [inferenceFps, setInferenceFps] = useState(0); // YOLO inference FPS (~1-2 FPS)
   const [latencyMs, setLatencyMs] = useState(0);
   const sizeRef = useRef(inferenceSize);
   useEffect(() => {
@@ -148,11 +154,12 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
     setInferenceFps(0);
     setSourceId('');
     setBackendStatus('IDLE');
+    setError('');
   }, [release]);
 
   useEffect(() => () => release(), [release]);
 
-  // Periodic FPS measurement on native video element
+  // Periodic FPS measurement on native video element (~30 FPS)
   useEffect(() => {
     if (!active || !stream) return;
     let animId: number;
@@ -194,7 +201,7 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
         await api.toggleCamera(false).catch(() => {});
       }
 
-      // Step 1: Open native browser camera stream immediately with robust constraints
+      // Step 1: Open native browser camera stream immediately
       const media = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: deviceId
@@ -214,7 +221,7 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
         t.addEventListener('ended', () => {
           if (generation === runtime.current.generation) {
             stop();
-            setError('Camera disconnected. Reconnect the device and start again.');
+            setError('Camera disconnected.');
           }
         })
       );
@@ -243,9 +250,7 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
         setSourceId(session.source_id);
         setBackendStatus('ONLINE');
       } catch (err) {
-        // Degraded mode: keep local camera running smoothly while backend is waking up
-        setBackendStatus('DEGRADED');
-        console.warn('Backend waking or unavailable, running camera in local preview mode:', err);
+        setBackendStatus('WAKING');
         session = { session_id: '', source_id: 'BROWSER-LOCAL' };
       }
 
@@ -270,32 +275,33 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
       const sendInferenceLoop = async () => {
         if (generation !== runtime.current.generation) return;
 
-        // Skip if another inference call is already in-flight (LATEST FRAME > EVERY FRAME)
+        // FIX 1: If inference is currently in progress, SILENTLY return. Do NOT treat as error or toast!
         if (runtime.current.inferenceInProgress) {
-          runtime.current.timer = setTimeout(sendInferenceLoop, 100);
+          runtime.current.timer = setTimeout(sendInferenceLoop, 200);
           return;
         }
 
         const el = video.current;
         if (!el || !el.videoWidth || el.readyState < 2) {
-          runtime.current.timer = setTimeout(sendInferenceLoop, 100);
+          runtime.current.timer = setTimeout(sendInferenceLoop, 150);
           return;
         }
 
-        // Avoid re-processing the exact same video frame
+        // Avoid re-processing unchanged video frames
         if (el.currentTime === lastVideoFrameTime) {
-          runtime.current.timer = setTimeout(sendInferenceLoop, 50);
+          runtime.current.timer = setTimeout(sendInferenceLoop, 80);
           return;
         }
         lastVideoFrameTime = el.currentTime;
 
         const cycleStart = performance.now();
-        let nextInterval = DETECTION_CONFIG.inferenceInterval;
+        let nextInterval = DETECTION_CONFIG.inferenceInterval; // default 1000ms
 
         try {
           runtime.current.inferenceInProgress = true;
+          setBackendStatus('PROCESSING');
 
-          // Resize selected frame to 640x360
+          // Resize latest camera frame to 640x360
           if (offscreenCtx) {
             offscreenCtx.drawImage(
               el,
@@ -306,7 +312,7 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
             );
           }
 
-          // Compress to JPEG with configured quality (0.60)
+          // Compress to JPEG (quality 0.60)
           const blob = await new Promise<Blob | null>((resolve) =>
             offscreenCanvas.toBlob(resolve, 'image/jpeg', DETECTION_CONFIG.jpegQuality)
           );
@@ -322,7 +328,7 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
 
           if (generation !== runtime.current.generation) return;
 
-          // Ensure valid session
+          // Ensure session is active
           if (!runtime.current.session) {
             try {
               const replacement = await cameraRequest('sessions', { method: 'POST' });
@@ -331,15 +337,19 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
               runtime.current.session = session.session_id;
               setSourceId(session.source_id);
             } catch {
-              throw new CameraRequestError('Waking backend inference engine...', 503);
+              setBackendStatus('WAKING');
+              throw new CameraRequestError('Waking backend...', 503);
             }
           }
 
+          // FIX 3: Request timeout with AbortController (8-10 seconds)
           const controller = new AbortController();
           runtime.current.abort = controller;
-          const timeout = setTimeout(() => controller.abort(), 12000);
+          const timeout = setTimeout(() => controller.abort(), DETECTION_CONFIG.requestTimeoutMs);
 
           let result: {
+            busy?: boolean;
+            skipped?: boolean;
             detections?: any[];
             tracks?: any[];
             source_id?: string;
@@ -370,16 +380,25 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
           const now = performance.now();
           const latency = Math.round(now - cycleStart);
           setLatencyMs(latency);
+
+          // FIX 1 & 9: If YOLO is busy, skip this frame cycle silently without any error
+          if (result.busy) {
+            setBackendStatus('PROCESSING');
+            runtime.current.consecutiveErrors = 0;
+            nextInterval = 800;
+            return;
+          }
+
           setProcessingMs(result.inference_ms || result.processing_ms || latency);
 
-          // Update inference FPS
+          // Update inference rate (YOLO FPS)
           if (lastInferenceTime > 0) {
             const calculatedFps = Math.round(10000 / (now - lastInferenceTime)) / 10;
             setInferenceFps(calculatedFps);
           }
           lastInferenceTime = now;
 
-          // Process detections via ClientSurvivorTracker for smooth IoU tracking & EMA coordinate smoothing
+          // Process detections via ClientSurvivorTracker (works with or without GPS)
           const rawDetections = result.detections || result.tracks || [];
           const currentFix = freshFix(fix.current);
           const { activeTracks, newAlerts } = trackerRef.current.update(
@@ -411,34 +430,36 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
           setBackendStatus('ONLINE');
           runtime.current.consecutiveErrors = 0;
 
-          // Adaptive inference timing based on server latency
-          if (latency < 350) {
-            nextInterval = 500;
-          } else if (latency < 750) {
-            nextInterval = 650;
+          // FIX 2: Adaptive inference timing based on measured latency
+          if (latency < 700) {
+            nextInterval = 700;
           } else if (latency < 1200) {
-            nextInterval = 900;
+            nextInterval = 1000;
+          } else if (latency < 2000) {
+            nextInterval = 1500;
           } else {
-            nextInterval = 1300;
+            nextInterval = 2000;
           }
-        } catch (e) {
+        } catch (e: any) {
           if (generation !== runtime.current.generation) return;
 
-          runtime.current.consecutiveErrors++;
-          const errors = runtime.current.consecutiveErrors;
-          const backoffDelay = Math.min(8000, 1000 * Math.pow(1.5, errors - 1));
-          nextInterval = backoffDelay;
-
-          setBackendStatus('DEGRADED');
-          setInferenceFps(0);
-
-          if (e instanceof CameraRequestError && e.status === 410) {
+          // Check if request timed out / was aborted
+          if (e.name === 'AbortError') {
+            setBackendStatus('DELAYED');
+            nextInterval = 2000;
+          } else if (e instanceof CameraRequestError && e.status === 410) {
             // Session expired: recreate on next cycle
             runtime.current.session = '';
+            setBackendStatus('WAKING');
+            nextInterval = 1500;
+          } else {
+            runtime.current.consecutiveErrors++;
+            const errors = runtime.current.consecutiveErrors;
+            nextInterval = Math.min(8000, 1500 * Math.pow(1.5, errors - 1));
+            setBackendStatus('DELAYED');
           }
 
-          const errMsg = e instanceof Error ? e.message : 'Inference temporarily degraded.';
-          setError(`AI degraded: ${errMsg}`);
+          setInferenceFps(0);
         } finally {
           runtime.current.inferenceInProgress = false;
           if (generation === runtime.current.generation) {
@@ -455,15 +476,15 @@ export function BrowserCameraProvider({ children }: { children: ReactNode }) {
       const name = e instanceof DOMException ? e.name : '';
       setError(
         name === 'NotAllowedError'
-          ? 'Camera permission denied. Allow camera access for this site in your browser settings.'
+          ? 'Camera permission denied. Allow camera access in browser settings.'
           : name === 'NotFoundError'
-          ? 'No camera found. Connect a camera or choose a different device.'
+          ? 'No camera found on this device.'
           : name === 'NotReadableError'
-          ? 'Camera is in use by another application. Close other camera apps and retry.'
+          ? 'Camera is in use by another application.'
           : name === 'OverconstrainedError'
-          ? 'Selected camera constraints are not supported by this device.'
+          ? 'Selected camera constraints are not supported.'
           : name === 'SecurityError'
-          ? 'Camera access blocked due to security/origin restrictions. Use HTTPS or localhost.'
+          ? 'Camera access requires HTTPS or localhost.'
           : e instanceof Error
           ? e.message
           : 'Could not initialize camera.'

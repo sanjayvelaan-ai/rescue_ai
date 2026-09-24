@@ -73,11 +73,41 @@ class BrowserSessions:
             entry = self.sessions.get(sid)
             if not entry or time.monotonic()-entry['seen'] >= 120:
                 raise HTTPException(410, 'Camera session expired. Restart this device camera.')
+
+        # Non-blocking single-flight semaphore: return busy payload without treating as an error
         if not self.capacity.acquire(blocking=False):
-            raise HTTPException(429, 'YOLO is busy; this camera will retry without queuing frames.')
+            return dict(
+                busy=True,
+                detections=[],
+                tracks=[],
+                source_id=entry['pipeline'].source_id if entry else 'BROWSER',
+                preview="",
+                thermal_preview="",
+                frame_id=payload.frame_id,
+                inference_size=payload.inference_size,
+                inference_ms=0,
+                processing_ms=0,
+                timestamp=int(time.time() * 1000),
+                location_source=entry['location']['source'] if (entry and entry['location']) else 'UNLOCATED'
+            )
+
         try:
             if payload.frame_id <= entry['last_frame']:
-                raise HTTPException(409, 'Frame already processed or out of order.')
+                return dict(
+                    busy=False,
+                    skipped=True,
+                    detections=[],
+                    tracks=[],
+                    source_id=entry['pipeline'].source_id,
+                    preview="",
+                    thermal_preview="",
+                    frame_id=payload.frame_id,
+                    inference_size=payload.inference_size,
+                    inference_ms=0,
+                    processing_ms=0,
+                    timestamp=int(time.time() * 1000),
+                    location_source='UNLOCATED'
+                )
             try:
                 raw = base64.b64decode(payload.jpeg, validate=True)
                 with Image.open(io.BytesIO(raw)) as header:
@@ -90,6 +120,7 @@ class BrowserSessions:
                 raise HTTPException(422, str(exc)) from exc
             if not detector.model_online:
                 raise HTTPException(503, 'YOLO model is unavailable on the server.')
+
             started = time.monotonic()
             detections = detector.infer_frame(frame, imgsz=payload.inference_size)
             if detector.last_error: raise HTTPException(503, detector.last_error)
@@ -107,6 +138,7 @@ class BrowserSessions:
                 if ok: thermal_b64 = 'data:image/jpeg;base64,'+base64.b64encode(thermal).decode()
 
             return dict(
+                busy=False,
                 detections=detections,
                 tracks=tracks,
                 source_id=entry['pipeline'].source_id,
