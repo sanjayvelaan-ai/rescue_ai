@@ -109,11 +109,20 @@ class YOLODetector:
 
         try:
             with self._lock:
-                results = self.model(
-                    frame, conf=self.conf_threshold, iou=self.iou_threshold,
-                    imgsz=imgsz, device=self.device, classes=self.person_class_ids,
-                    verbose=False
-                )
+                # Optimize CPU inference with inference_mode if torch is available
+                if TORCH_AVAILABLE and torch is not None:
+                    with torch.inference_mode():
+                        results = self.model(
+                            frame, conf=self.conf_threshold, iou=self.iou_threshold,
+                            imgsz=imgsz, device=self.device, classes=self.person_class_ids,
+                            verbose=False, save=False
+                        )
+                else:
+                    results = self.model(
+                        frame, conf=self.conf_threshold, iou=self.iou_threshold,
+                        imgsz=imgsz, device=self.device, classes=self.person_class_ids,
+                        verbose=False, save=False
+                    )
             self.last_error = None
 
             detections = []
@@ -121,28 +130,36 @@ class YOLODetector:
                 return detections
 
             boxes = results[0].boxes
-            if boxes is None:
+            if boxes is None or len(boxes) == 0:
                 return detections
 
             for i, box in enumerate(boxes):
                 cls_id = int(box.cls[0].item())
                 conf = float(box.conf[0].item())
                 
-                # Check if detected class is a person/survivor target
-                if cls_id in self.person_class_ids:
+                # Check if detected class is within target classes
+                if cls_id in self.person_class_ids or not self.person_class_ids:
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = float(xyxy[0]), float(xyxy[1]), float(xyxy[2]), float(xyxy[3])
                     center_x = float((x1 + x2) / 2.0)
                     center_y = float((y1 + y2) / 2.0)
                     
-                    cname = self.class_names.get(cls_id, "SURVIVOR").upper()
-                    if cname == "PERSON":
-                        cname = "SURVIVOR"
+                    raw_name = self.class_names.get(cls_id, "person")
+                    raw_lower = raw_name.lower().strip()
+                    
+                    # Context-safe labeling
+                    if raw_lower == "survivor":
+                        display_label = "SURVIVOR"
+                    elif raw_lower == "person":
+                        display_label = "PERSON / POSSIBLE SURVIVOR"
+                    else:
+                        display_label = raw_name.upper()
 
                     det = {
                         "id": f"{source.lower()}_{i}",
                         "class_id": cls_id,
-                        "class_name": cname,
+                        "class_name": raw_name,
+                        "display_label": display_label,
                         "confidence": round(conf, 3),
                         "x1": round(x1, 1),
                         "y1": round(y1, 1),

@@ -46,6 +46,7 @@ class BrowserFrame(BaseModel):
     jpeg: str = Field(max_length=1_800_000)
     location: CaptureLocation | None = None
     inference_size: Literal[416, 640] = 416
+    include_preview: bool = False
 
 class BrowserSessions:
     def __init__(self):
@@ -67,7 +68,7 @@ class BrowserSessions:
     def remove(self, sid):
         with self.lock: self.sessions.pop(sid, None)
 
-    def process(self, sid, payload):
+    def process(self, sid, payload: BrowserFrame):
         with self.lock:
             entry = self.sessions.get(sid)
             if not entry or time.monotonic()-entry['seen'] >= 120:
@@ -95,16 +96,29 @@ class BrowserSessions:
             tracks = entry['pipeline'].process(frame, detections, payload.frame_id)
             entry['last_frame'] = payload.frame_id
             entry['seen'] = time.monotonic()
-            ok, preview = cv2.imencode('.jpg', annotate(frame,tracks), [cv2.IMWRITE_JPEG_QUALITY,75])
-            if not ok: raise HTTPException(500, 'Could not encode detection preview.')
-            ok, thermal = cv2.imencode('.jpg', annotate(generate_thermal_simulation(frame),tracks), [cv2.IMWRITE_JPEG_QUALITY,75])
-            if not ok: raise HTTPException(500, 'Could not encode thermal view.')
-            return dict(tracks=tracks, source_id=entry['pipeline'].source_id,
-                preview='data:image/jpeg;base64,'+base64.b64encode(preview).decode(),
-                thermal_preview='data:image/jpeg;base64,'+base64.b64encode(thermal).decode(),
-                frame_id=payload.frame_id, inference_size=payload.inference_size,
-                processing_ms=round((time.monotonic()-started)*1000),
-                location_source=entry['location']['source'] if entry['location'] else 'UNLOCATED')
+            elapsed_ms = round((time.monotonic()-started)*1000)
+
+            preview_b64 = ""
+            thermal_b64 = ""
+            if payload.include_preview:
+                ok, preview = cv2.imencode('.jpg', annotate(frame,tracks), [cv2.IMWRITE_JPEG_QUALITY,75])
+                if ok: preview_b64 = 'data:image/jpeg;base64,'+base64.b64encode(preview).decode()
+                ok, thermal = cv2.imencode('.jpg', annotate(generate_thermal_simulation(frame),tracks), [cv2.IMWRITE_JPEG_QUALITY,75])
+                if ok: thermal_b64 = 'data:image/jpeg;base64,'+base64.b64encode(thermal).decode()
+
+            return dict(
+                detections=detections,
+                tracks=tracks,
+                source_id=entry['pipeline'].source_id,
+                preview=preview_b64,
+                thermal_preview=thermal_b64,
+                frame_id=payload.frame_id,
+                inference_size=payload.inference_size,
+                inference_ms=elapsed_ms,
+                processing_ms=elapsed_ms,
+                timestamp=int(time.time() * 1000),
+                location_source=entry['location']['source'] if entry['location'] else 'UNLOCATED'
+            )
         finally:
             self.capacity.release()
 
